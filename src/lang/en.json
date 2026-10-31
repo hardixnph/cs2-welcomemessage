@@ -1,0 +1,6 @@
+{
+  "Prefix": "{green}[Welcome]{default}",
+  "Welcome": "{default}Welcome to the server, {lime}{player}{default}!",
+  "JoinAnnounce": "{lime}{player} {default}connected from {gold}{city}{default}, {gold}{country}",
+  "Unknown": "Unknown"
+}
