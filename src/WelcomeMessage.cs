@@ -5,6 +5,7 @@ using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Translations;
 using CounterStrikeSharp.API.Modules.Utils;
+using MaxMind.Db;
 using MaxMind.GeoIP2;
 using Microsoft.Extensions.Logging;
 
@@ -31,7 +32,7 @@ public class WelcomeMessageConfig : BasePluginConfig
 public class WelcomeMessage : BasePlugin, IPluginConfig<WelcomeMessageConfig>
 {
     public override string ModuleName => "WelcomeMessage";
-    public override string ModuleVersion => "1.0.0";
+    public override string ModuleVersion => "1.0.1";
     public override string ModuleAuthor => "Hardix";
     public override string ModuleDescription => "Welcome message with country and city (GeoIP) on connect";
 
@@ -65,9 +66,20 @@ public class WelcomeMessage : BasePlugin, IPluginConfig<WelcomeMessageConfig>
 
         if (path != null)
         {
-            _geoIp = new DatabaseReader(path, new[] { Config.GeoIpLanguage, "en" });
-            _hasCity = _geoIp.Metadata.DatabaseType.Contains("City", StringComparison.OrdinalIgnoreCase);
-            Logger.LogInformation("Loaded GeoIP database {Path} ({Type})", path, _geoIp.Metadata.DatabaseType);
+            try
+            {
+                // Read into memory instead of memory-mapping: a mapped file that gets replaced or is corrupt
+                // segfaults the whole server on Linux, while in-memory reads only throw an exception
+                _geoIp = new DatabaseReader(path, new[] { Config.GeoIpLanguage, "en" }, FileAccessMode.Memory);
+                _hasCity = _geoIp.Metadata.DatabaseType.Contains("City", StringComparison.OrdinalIgnoreCase);
+                Logger.LogInformation("Loaded GeoIP database {Path} ({Type})", path, _geoIp.Metadata.DatabaseType);
+            }
+            catch (Exception ex)
+            {
+                _geoIp?.Dispose();
+                _geoIp = null;
+                Logger.LogError(ex, "Failed to load GeoIP database {Path}, country and city will show as unknown", path);
+            }
         }
         else
         {
@@ -130,17 +142,25 @@ public class WelcomeMessage : BasePlugin, IPluginConfig<WelcomeMessageConfig>
         if (!IPAddress.TryParse(ip, out var address))
             return (null, null, null);
 
-        // A Country database has no city, so {city} falls back to "Unknown"
-        if (_hasCity)
+        try
         {
-            return _geoIp.TryCity(address, out var city) && city != null
-                ? (city.Country.Name, city.Country.IsoCode, city.City.Name)
+            // A Country database has no city, so {city} falls back to "Unknown"
+            if (_hasCity)
+            {
+                return _geoIp.TryCity(address, out var city) && city != null
+                    ? (city.Country.Name, city.Country.IsoCode, city.City.Name)
+                    : (null, null, null);
+            }
+
+            return _geoIp.TryCountry(address, out var country) && country != null
+                ? (country.Country.Name, country.Country.IsoCode, null)
                 : (null, null, null);
         }
-
-        return _geoIp.TryCountry(address, out var country) && country != null
-            ? (country.Country.Name, country.Country.IsoCode, null)
-            : (null, null, null);
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "GeoIP lookup failed for {Ip}", ip);
+            return (null, null, null);
+        }
     }
 
     private string FormatMessage(CCSPlayerController player, string key, Dictionary<string, string> placeholders)
